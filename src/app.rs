@@ -1,50 +1,74 @@
+use core::panic;
 use std::path::PathBuf;
 use std::{fs, io};
 
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use once_cell::sync::Lazy;
-use ratatui::buffer::Buffer;
-use ratatui::layout::Rect;
+use crossterm::event::{self, Event, KeyEventKind};
+use ratatui::layout::Position;
 use ratatui::style::Stylize;
-use ratatui::text::{Line, Text};
-use ratatui::widgets::{Block, Paragraph, Widget};
-use ratatui::DefaultTerminal;
-use regex::Regex;
+use ratatui::text::{Line, Span, Text};
+use ratatui::widgets::{Block, Paragraph};
+use ratatui::{DefaultTerminal, Frame};
 
-#[derive(Debug)]
-struct Todo {
-    description: String,
-    completed: bool,
-}
-
-impl Todo {
-    fn to_string(&self) -> String {
-        format!(
-            "[{check}] {description}",
-            check = if self.completed { "x" } else { " " },
-            description = self.description
-        )
-    }
-
-    fn deserialize(line: &str) -> Option<Self> {
-        static RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"- \[([ xX])\] (.*)").unwrap());
-        RE.captures(line).map(|caps| Self {
-            completed: !caps[1].eq(" "),
-            description: caps[2].into(),
-        })
-    }
-
-    fn serialize(&self) -> String {
-        format!("- {}", self.to_string())
-    }
-}
+use crate::todo::Todo;
+use crate::ui_state::{ListState, UiState};
 
 #[derive(Debug)]
 pub struct App {
-    exit: bool,
-    position: usize,
+    ui_state: UiState,
+    state: AppState,
     data_path: PathBuf,
-    todos: Vec<Todo>,
+}
+
+#[derive(Debug)]
+pub struct AppState {
+    pub hide_completed: bool,
+    pub todos: Vec<Todo>,
+}
+
+impl AppState {
+    pub fn toggle_todo(&mut self, list_position: usize) {
+        let current = self
+            .todos
+            .get_mut(list_position)
+            .expect("Position should be a valid index");
+        current.completed = !current.completed;
+    }
+
+    pub fn delete_todo(&mut self, list_position: usize) {
+        self.todos.remove(list_position);
+    }
+
+    pub fn get_next_position(&self, up: bool, current_list_position: usize) -> usize {
+        if (up && current_list_position == 0) || (!up && current_list_position == self.todos.len())
+        {
+            return current_list_position;
+        }
+        let mut current_list_position = if up {
+            current_list_position - 1
+        } else {
+            current_list_position + 1
+        };
+
+        if self.hide_completed {
+            while (1..self.todos.len()).contains(&current_list_position)
+                && self.todos[current_list_position].completed
+            {
+                if up {
+                    current_list_position -= 1
+                } else {
+                    current_list_position += 1
+                }
+            }
+
+            if let Some(todo) = self.todos.get(current_list_position) {
+                if current_list_position == 0 && todo.completed {
+                    current_list_position = self.get_next_position(false, current_list_position);
+                }
+            }
+        }
+
+        current_list_position
+    }
 }
 
 impl App {
@@ -71,25 +95,126 @@ impl App {
         .collect();
 
         Ok(Self {
-            exit: false,
-            position: 0,
             data_path: path,
-            todos,
+            ui_state: UiState::List(ListState::new(0)),
+            state: AppState {
+                todos,
+                hide_completed: false,
+            },
         })
     }
 
     pub fn run(mut self, mut terminal: DefaultTerminal) -> io::Result<()> {
-        while !self.exit {
-            terminal.draw(|frame| frame.render_widget(&self, frame.area()))?;
+        while !matches!(self.ui_state, UiState::Quit) {
+            terminal.draw(|frame| self.render(frame))?;
             self.handle_events()?;
         }
+        self.write_to_file();
         Ok(())
+    }
+
+    fn render(&self, frame: &mut Frame) {
+        let title = Line::from("todui").bold().blue().centered();
+        let block = Block::new().title_bottom(title);
+
+        let mut todo_lines: Vec<Line> = self
+            .state
+            .todos
+            .iter()
+            .enumerate()
+            .filter_map(|(i, todo)| {
+                if self.state.hide_completed && todo.completed {
+                    return None;
+                }
+
+                let position = match &self.ui_state {
+                    UiState::List(state) => state.position,
+                    UiState::Delete(state) => state.position,
+                    _ => usize::MAX,
+                };
+
+                let selected = i == position;
+
+                let main_span = {
+                    let base = Span::from(format!(
+                        "{prefix} {todo_string}",
+                        prefix = if selected { ">" } else { " " },
+                        todo_string = todo.to_string()
+                    ));
+                    if selected {
+                        base.light_blue().bold()
+                    } else if todo.completed {
+                        base.dark_gray()
+                    } else {
+                        base
+                    }
+                };
+                let info = if matches!(self.ui_state, UiState::Delete(_)) && selected {
+                    Span::from(" delete? y/n").red()
+                } else {
+                    Span::from("")
+                };
+                Some(Line::from(vec![main_span, info]))
+            })
+            .collect();
+
+        let add_line = match &self.ui_state {
+            UiState::List(state) => {
+                let add_new_selected = state.position == self.state.todos.len();
+                let line = Line::from(format!(
+                    "{prefix} add new +",
+                    prefix = if add_new_selected { ">" } else { " " }
+                ))
+                .italic();
+                if add_new_selected {
+                    line.blue().bold()
+                } else {
+                    line
+                }
+            }
+            UiState::Delete(_) => Line::from("  add new +"),
+            UiState::Add(state) => {
+                Line::from(format!("> {description}", description = state.description)).light_blue()
+            }
+            UiState::Quit => panic!("Should not hit quit state"),
+        };
+
+        todo_lines.push(add_line);
+
+        if let UiState::Add(state) = &self.ui_state {
+            let pos = Position {
+                x: (state.description.len() + 2) as u16,
+                y: (todo_lines.len() - 1) as u16,
+            };
+            frame.set_cursor_position(pos)
+        }
+
+        frame.render_widget(
+            Paragraph::new(Text::from(todo_lines)).block(block),
+            frame.area(),
+        );
     }
 
     fn handle_events(&mut self) -> io::Result<()> {
         match event::read()? {
-            // it's important to check KeyEventKind::Press to avoid handling key release events
-            Event::Key(key) if key.kind == KeyEventKind::Press => self.handle_key_event(key),
+            Event::Key(key) if key.kind == KeyEventKind::Press => match &mut self.ui_state {
+                UiState::List(state) => {
+                    if let Some(new_state) = state.handle_key_event(key, &mut self.state) {
+                        self.ui_state = new_state
+                    }
+                }
+                UiState::Add(state) => {
+                    if let Some(new_state) = state.handle_key_event(key, &mut self.state.todos) {
+                        self.ui_state = new_state
+                    }
+                }
+                UiState::Delete(state) => {
+                    if let Some(new_state) = state.handle_key_event(key, &mut self.state) {
+                        self.ui_state = new_state
+                    }
+                }
+                _ => {}
+            },
             Event::Mouse(_) => {}
             Event::Resize(_, _) => {}
             _ => {}
@@ -97,94 +222,12 @@ impl App {
         Ok(())
     }
 
-    fn handle_key_event(&mut self, key: KeyEvent) {
-        match (key.modifiers, key.code) {
-            (_, KeyCode::Esc | KeyCode::Char('q'))
-            | (KeyModifiers::CONTROL, KeyCode::Char('c')) => self.quit(),
-            (_, KeyCode::Up | KeyCode::Char('k')) => self.move_position(true),
-            (_, KeyCode::Down | KeyCode::Char('j')) => self.move_position(false),
-            (_, KeyCode::Char(' ')) => self.handle_interact(),
-            _ => {}
-        }
-    }
-
-    fn move_position(&mut self, up: bool) {
-        if up && self.position > 0 {
-            self.position -= 1;
-        } else if !up && self.position < self.todos.len() {
-            self.position += 1;
-        }
-    }
-
-    fn handle_interact(&mut self) {
-        if self.position < self.todos.len() {
-            let current = &mut self.todos[self.position];
-            current.completed = !current.completed
-        } else {
-            todo!("Create new todo")
-        }
-    }
-
     fn write_to_file(&mut self) {
         let mut serilized = String::new();
-        for todo in &self.todos {
+        for todo in &self.state.todos {
             serilized.push_str(&todo.serialize());
             serilized.push('\n');
         }
         fs::write(&self.data_path, serilized).unwrap();
-    }
-
-    fn quit(&mut self) {
-        self.write_to_file();
-        self.exit = true;
-    }
-}
-
-impl Widget for &App {
-    fn render(self, area: Rect, buf: &mut Buffer) {
-        let title = Line::from("todui").bold().blue();
-        let helper_text = Line::from("Press 'q' or 'Esc' to quit.").italic();
-        let block = Block::new().title(title).title_bottom(helper_text);
-
-        let mut todo_lines: Vec<Line> = self
-            .todos
-            .iter()
-            .enumerate()
-            .map(|(i, todo)| {
-                let selected = i == self.position;
-                let line = Line::from(format!(
-                    "{prefix} {todo_string}",
-                    prefix = if selected { ">" } else { " " },
-                    todo_string = todo.to_string()
-                ));
-                if selected {
-                    line.light_blue()
-                } else if todo.completed {
-                    line.dark_gray()
-                } else {
-                    line
-                }
-            })
-            .collect();
-
-        let add_new = {
-            let add_new_selected = self.position == self.todos.len();
-            let line = Line::from(format!(
-                "{prefix} add new +",
-                prefix = if add_new_selected { ">" } else { " " }
-            ))
-            .italic();
-            if add_new_selected {
-                line.blue()
-            } else {
-                line
-            }
-        };
-
-        todo_lines.push(add_new);
-
-        Paragraph::new(Text::from(todo_lines))
-            .block(block)
-            .render(area, buf);
     }
 }

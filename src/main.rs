@@ -1,6 +1,8 @@
-pub use app::App;
+use crate::app::App;
 
-pub mod app;
+mod app;
+mod todo;
+mod ui_state;
 
 fn main() -> anyhow::Result<()> {
     let terminal = ratatui::init();
