@@ -76,6 +76,10 @@ impl App {
         static TODO_FILE: &str = "todo.md";
         let mut path = if let Ok(path) = std::env::var("TODUI_DIR") {
             PathBuf::from(path)
+        } else if let Ok(data_home) = std::env::var("XDG_DATA_HOME") {
+            let mut xdg_data_path = PathBuf::from(data_home);
+            xdg_data_path.push("todui");
+            xdg_data_path
         } else {
             let mut home =
                 xdg_home::home_dir().ok_or(anyhow::anyhow!("Could not get home directory"))?;
