@@ -11,6 +11,7 @@ use ratatui::{DefaultTerminal, Frame};
 
 use crate::todo::Todo;
 use crate::ui_state::{ListState, UiState};
+use crate::config;
 
 #[derive(Debug)]
 pub struct App {
@@ -73,21 +74,40 @@ impl AppState {
 
 impl App {
     pub fn new() -> anyhow::Result<Self> {
-        static TODO_FILE: &str = "todo.md";
-        let mut path = if let Ok(path) = std::env::var("TODUI_DIR") {
+        let xdg_base =  xdg::BaseDirectories::new();
+
+        let config_file_path = if let Ok(path) = std::env::var("TODUI_CONFIG_FILE") {
             PathBuf::from(path)
         } else {
-            let mut home =
-                xdg_home::home_dir().ok_or(anyhow::anyhow!("Could not get home directory"))?;
-            home.push(".todui");
-            home
+            let mut config_home = xdg_base.get_config_home()
+                    .ok_or(anyhow::anyhow!("Could not get XDG config home directory"))?;
+            config_home.push("todui");
+            config_home.push("config.toml");
+            config_home
         };
-        path.push(TODO_FILE);
-
-        let todos: Vec<Todo> = if fs::exists(&path)? {
-            fs::read_to_string(&path)?
+        let config_str = if fs::exists(&config_file_path)? {
+            Some(fs::read_to_string(&config_file_path)?)
         } else {
-            fs::create_dir_all(&path.parent().unwrap())?;
+            None
+        };
+        let config = config::parse_config(config_str.as_deref())?;
+
+        let mut todo_file_path = if let Ok(path) = std::env::var("TODUI_DIR") {
+            PathBuf::from(path)
+        } else {
+            let mut data_home = xdg_base.data_home
+                    .ok_or(anyhow::anyhow!("Could not get XDG data home directory"))?;
+            data_home.push(".todui");
+            data_home
+        };
+
+        static TODO_FILE: &str = "todo.md";
+        todo_file_path.push(TODO_FILE);
+
+        let todos: Vec<Todo> = if fs::exists(&todo_file_path)? {
+            fs::read_to_string(&todo_file_path)?
+        } else {
+            fs::create_dir_all(&todo_file_path.parent().unwrap())?;
             String::new()
         }
         .split('\n')
@@ -95,7 +115,7 @@ impl App {
         .collect();
 
         Ok(Self {
-            data_path: path,
+            data_path: todo_file_path,
             ui_state: UiState::List(ListState::new(0)),
             state: AppState {
                 todos,
