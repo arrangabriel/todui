@@ -78,6 +78,10 @@ impl App {
 
         let config_file_path = if let Ok(path) = std::env::var("TODUI_CONFIG_FILE") {
             PathBuf::from(path)
+        } else if let Ok(data_home) = std::env::var("XDG_DATA_HOME") {
+            let mut xdg_data_path = PathBuf::from(data_home);
+            xdg_data_path.push("todui");
+            xdg_data_path
         } else {
             let mut config_home = xdg_base.get_config_home()
                     .ok_or(anyhow::anyhow!("Could not get XDG config home directory"))?;
