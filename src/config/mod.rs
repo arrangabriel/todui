@@ -19,5 +19,15 @@ pub fn parse_config(config_str: Option<&str>) -> anyhow::Result<Config> {
 static DEFAULT_CONFIG: &str = r#"
 [keymap]
 delete = "d"
-
+interact = "Enter"
 "#;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_config_parses() {
+        parse_config(None).unwrap();
+    }
+}

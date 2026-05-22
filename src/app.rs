@@ -2,7 +2,7 @@ use core::panic;
 use std::path::PathBuf;
 use std::{fs, io};
 
-use crossterm::event::{self, Event, KeyEventKind};
+use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::layout::Position;
 use ratatui::style::Stylize;
 use ratatui::text::{Line, Span, Text};
@@ -18,6 +18,8 @@ pub struct App {
     ui_state: UiState,
     state: AppState,
     data_path: PathBuf,
+    initial_content: String,
+    should_write: bool,
 }
 
 #[derive(Debug)]
@@ -90,7 +92,7 @@ impl App {
         } else {
             None
         };
-        let config = config::parse_config(config_str.as_deref())?;
+        let _config = config::parse_config(config_str.as_deref())?;
 
         let mut todo_file_path = if let Ok(path) = std::env::var("TODUI_DIR") {
             PathBuf::from(path)
@@ -104,15 +106,17 @@ impl App {
         static TODO_FILE: &str = "todo.md";
         todo_file_path.push(TODO_FILE);
 
-        let todos: Vec<Todo> = if fs::exists(&todo_file_path)? {
+        let initial_content = if fs::exists(&todo_file_path)? {
             fs::read_to_string(&todo_file_path)?
         } else {
             fs::create_dir_all(&todo_file_path.parent().unwrap())?;
             String::new()
-        }
-        .split('\n')
-        .filter_map(Todo::deserialize)
-        .collect();
+        };
+
+        let todos: Vec<Todo> = initial_content
+            .split('\n')
+            .filter_map(Todo::deserialize)
+            .collect();
 
         Ok(Self {
             data_path: todo_file_path,
@@ -121,6 +125,8 @@ impl App {
                 todos,
                 hide_completed: false,
             },
+            initial_content,
+            should_write: true,
         })
     }
 
@@ -129,13 +135,22 @@ impl App {
             terminal.draw(|frame| self.render(frame))?;
             self.handle_events()?;
         }
-        self.write_to_file();
+        if self.should_write {
+            self.write_to_file();
+        }
         Ok(())
     }
 
     fn render(&self, frame: &mut Frame) {
         let title = Line::from("todui").bold().blue().centered();
         let block = Block::new().title_bottom(title);
+
+        let position = match &self.ui_state {
+            UiState::List(state) => state.position,
+            UiState::Delete(state) => state.position,
+            UiState::ConfirmOverwrite(pos) => *pos,
+            _ => usize::MAX,
+        };
 
         let mut todo_lines: Vec<Line> = self
             .state
@@ -146,12 +161,6 @@ impl App {
                 if self.state.hide_completed && todo.completed {
                     return None;
                 }
-
-                let position = match &self.ui_state {
-                    UiState::List(state) => state.position,
-                    UiState::Delete(state) => state.position,
-                    _ => usize::MAX,
-                };
 
                 let selected = i == position;
 
@@ -179,8 +188,12 @@ impl App {
             .collect();
 
         let add_line = match &self.ui_state {
-            UiState::List(state) => {
-                let add_new_selected = state.position == self.state.todos.len();
+            UiState::Add(state) => {
+                Line::from(format!("> {description}", description = state.description)).light_blue()
+            }
+            UiState::Quit => panic!("Should not hit quit state"),
+            _ => {
+                let add_new_selected = position == self.state.todos.len();
                 let line = Line::from(format!(
                     "{prefix} add new +",
                     prefix = if add_new_selected { ">" } else { " " }
@@ -192,14 +205,19 @@ impl App {
                     line
                 }
             }
-            UiState::Delete(_) => Line::from("  add new +"),
-            UiState::Add(state) => {
-                Line::from(format!("> {description}", description = state.description)).light_blue()
-            }
-            UiState::Quit => panic!("Should not hit quit state"),
         };
 
         todo_lines.push(add_line);
+
+        if matches!(self.ui_state, UiState::ConfirmOverwrite(_)) {
+            todo_lines.push(Line::from(""));
+            todo_lines.push(
+                Line::from(vec![
+                    Span::from("File has been modified externally. Overwrite? (y/n) ").red().bold(),
+                    Span::from("(esc to continue editing)").dark_gray().italic(),
+                ]),
+            );
+        }
 
         if let UiState::Add(state) = &self.ui_state {
             let pos = Position {
@@ -217,24 +235,35 @@ impl App {
 
     fn handle_events(&mut self) -> io::Result<()> {
         match event::read()? {
-            Event::Key(key) if key.kind == KeyEventKind::Press => match &mut self.ui_state {
-                UiState::List(state) => {
-                    if let Some(new_state) = state.handle_key_event(key, &mut self.state) {
-                        self.ui_state = new_state
+            Event::Key(key) if key.kind == KeyEventKind::Press => {
+                if let UiState::ConfirmOverwrite(pos) = self.ui_state {
+                    match (key.modifiers, key.code) {
+                        (_, KeyCode::Char('y')) => self.ui_state = UiState::Quit,
+                        (_, KeyCode::Char('n'))
+                        | (KeyModifiers::CONTROL, KeyCode::Char('c')) => {
+                            self.should_write = false;
+                            self.ui_state = UiState::Quit;
+                        }
+                        (_, KeyCode::Esc) => {
+                            self.ui_state = UiState::List(ListState::new(pos));
+                        }
+                        _ => {}
                     }
+                    return Ok(());
                 }
-                UiState::Add(state) => {
-                    if let Some(new_state) = state.handle_key_event(key, &mut self.state.todos) {
-                        self.ui_state = new_state
+
+                let new_state = match &mut self.ui_state {
+                    UiState::List(state) => state.handle_key_event(key, &mut self.state),
+                    UiState::Add(state) => {
+                        state.handle_key_event(key, &mut self.state.todos)
                     }
+                    UiState::Delete(state) => state.handle_key_event(key, &mut self.state),
+                    _ => None,
+                };
+                if let Some(new_state) = new_state {
+                    self.transition_to(new_state);
                 }
-                UiState::Delete(state) => {
-                    if let Some(new_state) = state.handle_key_event(key, &mut self.state) {
-                        self.ui_state = new_state
-                    }
-                }
-                _ => {}
-            },
+            }
             Event::Mouse(_) => {}
             Event::Resize(_, _) => {}
             _ => {}
@@ -242,12 +271,39 @@ impl App {
         Ok(())
     }
 
-    fn write_to_file(&mut self) {
-        let mut serilized = String::new();
+    fn serialize_todos(&self) -> String {
+        let mut serialized = String::new();
         for todo in &self.state.todos {
-            serilized.push_str(&todo.serialize());
-            serilized.push('\n');
+            serialized.push_str(&todo.serialize());
+            serialized.push('\n');
         }
-        fs::write(&self.data_path, serilized).unwrap();
+        serialized
+    }
+
+    fn transition_to(&mut self, new_state: UiState) {
+        self.ui_state = if matches!(&new_state, UiState::Quit) {
+            let pos = match &self.ui_state {
+                UiState::List(state) => state.position,
+                UiState::Delete(state) => state.position,
+                UiState::Add(_) => self.state.todos.len(),
+                _ => 0,
+            };
+            let new_content = self.serialize_todos();
+            let disk_content = fs::read_to_string(&self.data_path).unwrap_or_default();
+            if new_content == disk_content {
+                self.should_write = false;
+                UiState::Quit
+            } else if disk_content != self.initial_content {
+                UiState::ConfirmOverwrite(pos)
+            } else {
+                new_state
+            }
+        } else {
+            new_state
+        };
+    }
+
+    fn write_to_file(&self) {
+        fs::write(&self.data_path, self.serialize_todos()).unwrap();
     }
 }

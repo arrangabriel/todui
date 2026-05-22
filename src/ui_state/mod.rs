@@ -11,5 +11,6 @@ pub enum UiState {
     List(ListState),
     Add(AddState),
     Delete(DeleteState),
+    ConfirmOverwrite(usize),
     Quit,
 }
