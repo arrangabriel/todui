@@ -20,8 +20,8 @@ impl ListState {
         match (key.modifiers, key.code) {
             (_, KeyCode::Esc | KeyCode::Char('q')) | (KeyModifiers::CONTROL, KeyCode::Char('c')) => Some(UiState::Quit),
             (_, KeyCode::Char('h')) => self.toggle_hide_completed(app_state),
-            (_, KeyCode::Up | KeyCode::Char('k')) => self.move_position(true, app_state),
-            (_, KeyCode::Down | KeyCode::Char('j')) => self.move_position(false, app_state),
+            (_, KeyCode::Up | KeyCode::Char('k')) | (KeyModifiers::CONTROL, KeyCode::Char('p')) => self.move_position(true, app_state),
+            (_, KeyCode::Down | KeyCode::Char('j')) | (KeyModifiers::CONTROL, KeyCode::Char('n'))=> self.move_position(false, app_state),
             (_, KeyCode::Enter) => self.handle_interact(app_state),
             (_, KeyCode::Char('d')) if self.position != app_state.todos.len() => {
                 Some(UiState::Delete(DeleteState::new(self.position)))
