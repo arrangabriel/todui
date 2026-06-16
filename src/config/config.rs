@@ -1,5 +1,5 @@
-use serde::Deserialize;
 use paste::paste;
+use serde::Deserialize;
 
 /// Define configuration sections and their corresponding "raw" (partially specified)
 /// versions, and generate merging logic between them.

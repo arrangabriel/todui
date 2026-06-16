@@ -9,9 +9,9 @@ use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Paragraph};
 use ratatui::{DefaultTerminal, Frame};
 
+use crate::config;
 use crate::todo::Todo;
 use crate::ui_state::{ListState, UiState};
-use crate::config;
 
 #[derive(Debug)]
 pub struct App {
@@ -76,13 +76,14 @@ impl AppState {
 
 impl App {
     pub fn new() -> anyhow::Result<Self> {
-        let xdg_base =  xdg::BaseDirectories::new();
+        let xdg_base = xdg::BaseDirectories::new();
 
         let config_file_path = if let Ok(path) = std::env::var("TODUI_CONFIG_FILE") {
             PathBuf::from(path)
         } else {
-            let mut config_home = xdg_base.get_config_home()
-                    .ok_or(anyhow::anyhow!("Could not get XDG config home directory"))?;
+            let mut config_home = xdg_base
+                .get_config_home()
+                .ok_or(anyhow::anyhow!("Could not get XDG config home directory"))?;
             config_home.push("todui");
             config_home.push("config.toml");
             config_home
@@ -97,8 +98,9 @@ impl App {
         let mut todo_file_path = if let Ok(path) = std::env::var("TODUI_DIR") {
             PathBuf::from(path)
         } else {
-            let mut data_home = xdg_base.data_home
-                    .ok_or(anyhow::anyhow!("Could not get XDG data home directory"))?;
+            let mut data_home = xdg_base
+                .data_home
+                .ok_or(anyhow::anyhow!("Could not get XDG data home directory"))?;
             data_home.push(".todui");
             data_home
         };
@@ -148,6 +150,7 @@ impl App {
         let position = match &self.ui_state {
             UiState::List(state) => state.position,
             UiState::Delete(state) => state.position,
+            UiState::Edit(state) => state.position,
             UiState::ConfirmOverwrite(pos) => *pos,
             _ => usize::MAX,
         };
@@ -163,6 +166,15 @@ impl App {
                 }
 
                 let selected = i == position;
+
+                if let UiState::Edit(state) = &self.ui_state {
+                    if selected {
+                        return Some(
+                            Line::from(format!("> {description}", description = state.description))
+                                .light_blue(),
+                        );
+                    }
+                }
 
                 let main_span = {
                     let base = Span::from(format!(
@@ -211,20 +223,40 @@ impl App {
 
         if matches!(self.ui_state, UiState::ConfirmOverwrite(_)) {
             todo_lines.push(Line::from(""));
-            todo_lines.push(
-                Line::from(vec![
-                    Span::from("File has been modified externally. Overwrite? (y/n) ").red().bold(),
-                    Span::from("(esc to continue editing)").dark_gray().italic(),
-                ]),
-            );
+            todo_lines.push(Line::from(vec![
+                Span::from("File has been modified externally. Overwrite? (y/n) ")
+                    .red()
+                    .bold(),
+                Span::from("(esc to continue editing)").dark_gray().italic(),
+            ]));
         }
 
-        if let UiState::Add(state) = &self.ui_state {
-            let pos = Position {
-                x: (state.description.len() + 2) as u16,
-                y: (todo_lines.len() - 1) as u16,
-            };
-            frame.set_cursor_position(pos)
+        match &self.ui_state {
+            UiState::Add(state) => {
+                let pos = Position {
+                    x: (state.description.len() + 2) as u16,
+                    y: (todo_lines.len() - 1) as u16,
+                };
+                frame.set_cursor_position(pos);
+            }
+            UiState::Edit(state) => {
+                let y = if self.state.hide_completed {
+                    self.state
+                        .todos
+                        .iter()
+                        .take(state.position)
+                        .filter(|t| !t.completed)
+                        .count()
+                } else {
+                    state.position
+                };
+                let pos = Position {
+                    x: (state.cursor_x + 2) as u16,
+                    y: y as u16,
+                };
+                frame.set_cursor_position(pos);
+            }
+            _ => {}
         }
 
         frame.render_widget(
@@ -239,8 +271,7 @@ impl App {
                 if let UiState::ConfirmOverwrite(pos) = self.ui_state {
                     match (key.modifiers, key.code) {
                         (_, KeyCode::Char('y')) => self.ui_state = UiState::Quit,
-                        (_, KeyCode::Char('n'))
-                        | (KeyModifiers::CONTROL, KeyCode::Char('c')) => {
+                        (_, KeyCode::Char('n')) | (KeyModifiers::CONTROL, KeyCode::Char('c')) => {
                             self.should_write = false;
                             self.ui_state = UiState::Quit;
                         }
@@ -254,9 +285,8 @@ impl App {
 
                 let new_state = match &mut self.ui_state {
                     UiState::List(state) => state.handle_key_event(key, &mut self.state),
-                    UiState::Add(state) => {
-                        state.handle_key_event(key, &mut self.state.todos)
-                    }
+                    UiState::Add(state) => state.handle_key_event(key, &mut self.state.todos),
+                    UiState::Edit(state) => state.handle_key_event(key, &mut self.state.todos),
                     UiState::Delete(state) => state.handle_key_event(key, &mut self.state),
                     _ => None,
                 };
@@ -285,6 +315,7 @@ impl App {
             let pos = match &self.ui_state {
                 UiState::List(state) => state.position,
                 UiState::Delete(state) => state.position,
+                UiState::Edit(state) => state.position,
                 UiState::Add(_) => self.state.todos.len(),
                 _ => 0,
             };

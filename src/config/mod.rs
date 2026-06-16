@@ -1,6 +1,6 @@
 mod config;
 
-pub use config::{Config};
+pub use config::Config;
 use config::RawConfig;
 
 pub fn parse_config(config_str: Option<&str>) -> anyhow::Result<Config> {
@@ -14,7 +14,6 @@ pub fn parse_config(config_str: Option<&str>) -> anyhow::Result<Config> {
     };
     Ok(config)
 }
-
 
 static DEFAULT_CONFIG: &str = r#"
 [keymap]

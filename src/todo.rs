@@ -3,7 +3,7 @@ use regex::Regex;
 
 #[derive(Debug)]
 pub struct Todo {
-    description: String,
+    pub description: String,
     pub completed: bool,
 }
 

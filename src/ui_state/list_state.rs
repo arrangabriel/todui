@@ -4,7 +4,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::{app::AppState, ui_state::AddState};
 
-use super::{DeleteState, UiState};
+use super::{DeleteState, EditState, UiState};
 
 #[derive(Debug)]
 pub struct ListState {
@@ -18,13 +18,23 @@ impl ListState {
 
     pub fn handle_key_event(&mut self, key: KeyEvent, app_state: &mut AppState) -> Option<UiState> {
         match (key.modifiers, key.code) {
-            (_, KeyCode::Esc | KeyCode::Char('q')) | (KeyModifiers::CONTROL, KeyCode::Char('c')) => Some(UiState::Quit),
+            (_, KeyCode::Esc | KeyCode::Char('q'))
+            | (KeyModifiers::CONTROL, KeyCode::Char('c')) => Some(UiState::Quit),
             (_, KeyCode::Char('h')) => self.toggle_hide_completed(app_state),
-            (_, KeyCode::Up | KeyCode::Char('k')) | (KeyModifiers::CONTROL, KeyCode::Char('p')) => self.move_position(true, app_state),
-            (_, KeyCode::Down | KeyCode::Char('j')) | (KeyModifiers::CONTROL, KeyCode::Char('n'))=> self.move_position(false, app_state),
+            (_, KeyCode::Up | KeyCode::Char('k')) | (KeyModifiers::CONTROL, KeyCode::Char('p')) => {
+                self.move_position(true, app_state)
+            }
+            (_, KeyCode::Down | KeyCode::Char('j'))
+            | (KeyModifiers::CONTROL, KeyCode::Char('n')) => self.move_position(false, app_state),
             (_, KeyCode::Enter) => self.handle_interact(app_state),
             (_, KeyCode::Char('d')) if self.position != app_state.todos.len() => {
                 Some(UiState::Delete(DeleteState::new(self.position)))
+            }
+            (_, KeyCode::Char('e') | KeyCode::Char('i'))
+                if self.position != app_state.todos.len() =>
+            {
+                let description = app_state.todos[self.position].description.clone();
+                Some(UiState::Edit(EditState::new(self.position, description)))
             }
             _ => None,
         }
