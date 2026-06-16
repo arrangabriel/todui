@@ -171,7 +171,8 @@ impl App {
                     if selected {
                         return Some(
                             Line::from(format!("> {description}", description = state.description))
-                                .light_blue(),
+                                .light_blue()
+                                .bold(),
                         );
                     }
                 }
